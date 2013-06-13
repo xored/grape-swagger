@@ -86,18 +86,36 @@ module Grape
               header['Access-Control-Request-Method'] = '*'
               routes = @@target_class::combined_routes[params[:name]]
               models = {}
+
               routes_array = routes.map do |route|
                 notes = route.route_notes && @@markdown ? Kramdown::Document.new(route.route_notes.strip_heredoc).to_html : route.route_notes
                 http_codes = parse_http_codes route.route_http_codes
+                responseClass = nil
                 parameters = []
                 if (route.route_object_fields)
-                  parameters = parse_object_fields(route.route_object_fields)                
-                  models[parameters[0][:dataType]] = {
-                    properties: parse_model_parameters(route.route_object_fields)
-                  }
+                  parameters = parse_model_properties(route.route_object_fields).map do |name,values|
+                    params = {
+                      paramType: 'body',
+                      name: name,
+                      description: values[:description],
+                      required: !!values[:required]
+                    }
+
+                    params[:dataType] = values[:type] if values.key?(:type)
+                    params
+                  end
                 else
                   parameters = parse_params(route.route_params, route.route_path, route.route_method)
                 end
+
+                if (route.route_response_fields)
+                  fields = parse_fields(route.route_response_fields)                
+                  models[fields[0][:dataType]] = {
+                    properties: parse_model_properties(route.route_response_fields)
+                  }
+                  responseClass = fields[0][:dataType]
+                end
+
                 operations = {
                     :notes => notes,
                     :summary => route.route_description || '',
@@ -105,6 +123,7 @@ module Grape
                     :httpMethod => route.route_method,
                     :parameters => parse_header_params(route.route_headers) + parameters
                 }
+                operations.merge!({:responseClass => responseClass}) unless responseClass.nil?
                 operations.merge!({:errorResponses => http_codes}) unless http_codes.empty?
                 {
                   :path => parse_path(route.route_path, api_version),
@@ -149,7 +168,7 @@ module Grape
               end
             end
 
-            def parse_object_fields(params)
+            def parse_fields(params)
               if params
                 [{
                   paramType: 'body',
@@ -163,14 +182,18 @@ module Grape
               end
             end
 
-            def parse_model_parameters(params)
+            def parse_model_properties(params)
               if params
                 model_params = params.select do |param, value| 
                   param != :type && param != :desc && value.class != String
                 end
                 model = {}
                 model_params.each_pair do |param, value|
-                  model[param] = {:type => value[:type]}
+                  model[param] = {
+                    :type => value[:type],
+                    :required => !!value[:required],
+                    :description => value[:desc]
+                  }
                 end 
                 model
               else
